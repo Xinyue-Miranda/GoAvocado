@@ -1,0 +1,42 @@
+---
+title: "about"
+author: "Chudi Zhong and Xinyue (Miranda) Ding"
+date: "December 16, 2018"
+output: html_document
+---
+
+## Introduction
+
+This shiny app is part of our "GoAvocado" project for STA 523 final assignment.
+
+We use the `shiny` package to create a shiny app. First of all, we import the CSV file obtained from the previous part. The shiny app has a sidebar which allows users to select the ranges of calorie and cook time, characteristics of recipe such as “vegan” and “quick & easy”. We also incorporate the run button to initiate the information retrieval. The main panel will return the filter selections and the titles of recipes that satisfy the requirements. Once the user clicks the link, a modal dialog box will pop up, listing the title, introduction, labels, cook time, calories, image as well as a link to the full recipe on the loveonetoday.com.  
+
+
+## ReadMe
+
+This shiny app is developed specifically for avocado lovers(just like us!) to filter avocado recipes from the whole 160 recipes we previously scrapped from https://loveonetoday.com/avocado-recipes/. 
+
+To run this app, first, choose the `Search` tag, what you need to do is specifing the 1)calories range, 2)cooking time range and 3) whatever labels you like. By clicking the run button, you will then get all the avocado recipes meeting your requirements! You can get more information about each recipe from a dialog modal by clicking the link.
+
+In the `Table` tag, you can view the detailed information for the filtered recipes in a table output.
+
+In the `Codes` tag, you can view the codes we used to build this shiny dashboard.
+
+
+
+## Author
+
+Chudi Zhong(cz131@duke.edu) & Xinyue Ding (xd43@duke.edu)
+
+Department of Statistical Science
+
+Duke University
+
+
+
+## Reference
+
+1. "Absoption Processes" by Marc Lavielle: http://shiny.webpopix.org/dashboard/absorption/
+
+2. https://rstudio.github.io/shinydashboard/
+

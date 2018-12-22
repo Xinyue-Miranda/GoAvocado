@@ -1,0 +1,514 @@
+---
+title: "Avocado"
+author: "Xinyue (Miranda) Ding, Chudi Zhong"
+output:
+  html_document: default
+  pdf_document: default
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(forecast)
+library(magrittr)
+library(purrr)
+library(rvest)
+library(stringr)
+```
+
+## Introduction 
+
+The Hass avocado with the dark green bumpy skin, weighed 200-300 grams, is one of the most popular fruit in the United States. It was originally grown in Southern California by Rudolph Hass, an amateur horticulturist. Nowadays, the Hass cultivar has accounted for more than 80% of the avocado crop in the United States and 95% in California (Wikipedia, 2018). A dataset with 18,249 records is obtained from Kaggle.com. XXX is applied to predict the avocado price. (prediction results). Moreover, we scrap the avocado recipe information such as `introduction` and `calories` from loveonetoday.com, and use the obtained data to create a shiny app, from which users can search for the recipes that satisfy their needs. 
+
+
+![Avocado Toast: https://hips.hearstapps.com/del.h-cdn.co/assets/16/01/1452289733-avocado-toast.jpg](https://hips.hearstapps.com/del.h-cdn.co/assets/16/01/1452289733-avocado-toast.jpg)
+
+
+## Data Processing
+
+```{r warning=FALSE}
+avocado = suppressMessages(read_csv("data/avocado.csv"))
+avocado = avocado[,-1]
+avocado = avocado %>% mutate(day = as.factor(day(Date)),
+                             month = as.factor(month(Date)), 
+                             year = as.factor(year))
+```
+First of all, we visualize the average avocado price in the US from January 2015 to March 2018. Figure 1 indicates that the pattern of average prices for two types of avocado were similar, both of which were stable before mid of 2016, about $\$1.50$ per unit for organic avocado and about $\$1.00$ per unit for conventional avocado. In the summer of 2015, the price of organic avocado dropped tremendously for a while and then returned back. In 2017, the price for avocado had jumped up and reached the peak in the fall that year with more than $\$2.00$ per unit for organic avocado and $\$1.60$ per unit for conventional avocado. Figure 2 visualizes the avergae avocado price in the 53 regions. Comparing with the curve drawns based on the nationalwide data, we infer that geographic location may have the impact on the avocado price. Figure 3 and 4 use boxplot to illustrate the variation of the price by year, and we can get the similar insight as from the previous plots. 
+
+```{r EDA, warning=FALSE}
+### midsouth northeast southeast west
+ggplot(data = avocado %>% filter(region=="TotalUS"), 
+       aes(x = Date, y = AveragePrice, color = type)) + 
+  geom_line() + 
+  geom_smooth(linetype = 2, alpha = 0.3)+
+  theme_bw() + 
+  labs(title = "Average Avocado Price TotalUS", caption = "Figure 1")
+
+ggplot(data = avocado %>% filter(region != "TotalUS"), 
+       aes(x = Date, y = AveragePrice, color = type)) +
+  geom_smooth() + 
+  geom_smooth(data = avocado %>% filter(region=="TotalUS"), linetype = 2, alpha = 0.3) +
+  theme_bw() +
+  labs(title = "Average Avocado Price in 53 Regions", caption = "Figure 2")
+
+ggplot(data = avocado %>% filter(region == "TotalUS"), 
+       aes(x = type, y = AveragePrice, color = year)) +
+  geom_boxplot() + 
+  theme_bw() + 
+  labs(title = "Average price of avocado per year by avocado type TotalUS", caption = "Figure 3")
+
+ggplot(data = avocado %>% filter(region != "TotalUS"), 
+       aes(x = type, y = AveragePrice, color = year)) +
+  geom_boxplot() + 
+  theme_bw() + 
+  labs(title = "Average price of avocado per year by avocado type", caption = "Figure 4")
+```
+
+## Modeling 
+
+At first, we try to include all the variables in the dataset to establish a regression model, we found the R-squared is very low.Then we try to use stepwise regression with some subjective analysis of this dataset, the result shows that total volume is the main reason which can affect the price. Their relationship should be like this:
+$$P_{t} = a_{0} + a_{1}*P_{t-1} +a_{2}*V_{t-1}... $$
+$$V_{t} = a_{0} + b_{1}*V_{t-1} +b_{2}*P_{t-1}... $$
+The estimated function are :
+`y1 = y1.l1 + y2.l1 + y1.l2 + y2.l2 + y1.l3 + y2.l3 + C` and `y2 = y1.l1 + y2.l1 + y1.l2 + y2.l2 + y1.l3 + y2.l3 + C` with each R-squared: `0.1528` and `0.245`.
+
+Due to the unsatisfactory results of the above models, we decided to switch to some other models by applying autoregressive method.
+
+We arrange the average price of avocado in `Charlotte` according to the date. And we choose the `organic` type to analyse.
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(tseries)
+library(forecast)
+
+avocado_price <-
+    read_csv("data/avocado.csv") %>%
+    as_tibble() %>%
+    janitor::clean_names() %>%
+    arrange(date) %>%
+    filter(region == "Charlotte", type == "organic") %>%
+    dplyr::select(average_price)
+```
+
+The time interval in this dataset is 7 days, and the frequency of this time series is 52 (num of week in the year). We use `stl` function to decompose a time series into seasonal, trend and irregular components. Then we use `adf.test` function to test the stationary of the data.
+
+```{r}
+week_price <- ts(avocado_price$average_price,frequency = 52)
+decomp <- stl(week_price, s.window = "periodic")
+plot(decomp, cex = 0.6)
+adf.test(week_price)
+adf.test(diff(week_price))
+```
+
+From the graph of seasonal we can see that it is clearly periodic, so clearly we need at least one order of differencing. And the adf test shows that one time differential can omit the non-stationary of this series. Then we can get the value of d and D by comparing the following models
+
+```{r}
+model1 <- arima(week_price, order = c(0,0,0) , seasonal = list(order = c(0, 1, 0), period = 52))
+model2 <- arima(week_price, order = c(0,1,0) , seasonal = list(order = c(0, 1, 0), period = 52))
+accuracy(model1)
+accuracy(model2)
+par(mfrow=c(2,2))
+acf(model1$residuals,lag.max = 100)
+pacf(model1$residuals)
+acf(model2$residuals)
+pacf(model2$residuals)
+```
+
+From the graph of acf and pacf, althougth `model2` has slightly smaller MSE, its pacf shows an obvious negative relationship. So `model1` is better. We can see the telltale signs from its pacf that it is AR(1). And the acf shows a strong seasonal variation, so we decide to d = 0 and D = 1. Then we use the auto function to find the minimum AIC model with constraints d = 0 and D = 1.
+
+```{r}
+mm <- auto.arima(week_price, d = 0,D = 1, seasonal = TRUE, start.p = 1, max.p = 1)
+summary(mm)
+```
+
+We choose the first 20 weeks as our training set and the results are shown as below. 
+
+```{r}
+fit.week <- arima(week_price[1:140], order = c(1, 0, 0), seasonal = list(order = c(1, 1, 0), period = 52))
+pre.week <- predict(fit.week, n.ahead = 29)
+par(mfrow=c(1,1))
+matplot(1:29, cbind(week_price[141:169], pre.week$pred), type = "l")
+fweekcast <- forecast(fit.week, h = 29)
+plot(fweekcast)
+lines(ts(week_price))
+```
+
+
+
+
+
+## Scrap avocado recipes from loveonetoday.com
+
+We write the code to scrap the data from the loveonetoday.com. Since the website has recipes in 46 pages, we first construct 46 URLs for each page and use `read_html function` to get the recipe URLs and corresponding image URLs. We finally get 405 recipe URLs and 405 image URLs. Then we use the `for loop` to obtain the `title`, `introduction`, `characteristics`, `cook time`, and `calories` for each recipe and store the information in a data frame. We delete the recipes without cook time and the data frame has 160 records. Then we apply the `stringr` package to clean the cook time. First of all, we transform all characters to lower case and then keep the shorter time if the stored information is a time interval, for example, replacing "3 hours on high or 6 hours on low in slow cooker" to "3 hours". Then we replace the string "plus" or "and" to "+" and use "+" as the split index. Finally, we use the for loop and if statement to obtain the cook time in minutes for 160 recipes. The final data frame contains 160 recipes with 7 variables: `title`, `image_url`, `introduction`, `characteristics`, `calories`, `url`, and `time.minutes`. Since it takes a while to run the code, we save the data frame as a csv file, and in the next part, Shiny App, we will read the file to import the data.  
+
+```{r data_scraping, eval=FALSE}
+### page 1-46
+page_base_url = "https://loveonetoday.com/avocado-recipes/page"
+
+TITLE = c()
+IMAGE = c()
+RECIPE = c()
+for (id in 1:46) {
+  page_num = paste0(id, "/")
+  page_url = file.path(page_base_url, page_num)
+  page = read_html(page_url)
+  title = page %>% html_nodes(".title") %>% html_text()
+  l = length(title)
+  TITLE = c(TITLE,title[c(-1, -l+2, -l+1, -l)])
+  image = as.character(page %>% html_nodes("a") %>% html_nodes("img"))
+  IMAGE = c(IMAGE, image[c(-1, -l+2, -l+1, -l)])
+  recipe = as.character(page %>% html_nodes("h2 a")) 
+  RECIPE = c(RECIPE, recipe)
+}
+
+
+### get image and recipe url
+image_url = c()
+image_split = strsplit(IMAGE, " ")
+recipe_url = c()
+recipe_split = strsplit(RECIPE, "\\/")
+for (i in 1:length(IMAGE)) {
+  image = image_split[[i]][4]
+  image_link = substr(image, 6, (str_length(image)-1))
+  image_url = c(image_url, image_link)
+  
+  recipe = recipe_split[[i]][5]
+  recipe_link = paste0("https://loveonetoday.com/recipe/", recipe)
+  recipe_url = c(recipe_url, recipe_link)
+}
+
+
+
+### scrap recipe 
+
+avocado_recipe = NULL
+for (i in 1:length(recipe_url)){
+  
+  url = recipe_url[i]
+  recipe_page = read_html(url)
+  
+  ### get introduction 
+  intro = recipe_page %>% 
+    html_nodes("p") %>% 
+    html_text()
+  intro = intro[3]
+  
+  ### characterstic 
+  character = recipe_page %>% 
+    html_nodes("p") %>% 
+    html_nodes("a") %>% 
+    html_text()
+  l.c = length(character)
+  characters = paste(character[-c(1, (l.c-3):l.c)], collapse = ", ")
+  
+  ### time 
+  time.length = recipe_page %>% 
+    html_nodes("dd") %>% 
+    html_text()
+  l = length(time.length)
+  if (l>2) {
+    time.length = time.length[2]
+  } else {
+    time.length = NA
+  }
+  
+  ### get calories
+  calor = recipe_page %>% 
+    html_nodes(".h4") %>% 
+    html_node("td") %>% 
+    html_text() %>% 
+    str_remove_all("\t") %>% 
+    str_remove_all("\n") %>% 
+    as.numeric()
+  
+  recipe_info = cbind(TITLE[i], image_url[i], intro, characters, time.length, calor, url)
+  
+  avocado_recipe = rbind(avocado_recipe, recipe_info)
+  
+}
+
+avocado_recipe= avocado_recipe %>%
+  as.data.frame() %>%
+  filter(!is.na(time.length))
+colnames(avocado_recipe) = c("title", "image_url", "introduction", "characteristics", "time", "calories", "url")
+
+### get cook time in munites 
+time = as.character(avocado_recipe$time)
+time = tolower(time)
+time = gsub("\\(|\\)"," ", time)
+time = str_replace_all(time, "3 hours on high or 6 hours on low in slow cooker", "3 hours")
+time = str_replace_all(time, "2 to 5", "2")
+time = str_replace_all(time, "1 to 2", "1")
+time = str_replace_all(time, "8 to 14", "8")
+time = str_replace_all(time, "7-9", "7")
+time = str_replace_all(time, "25 - 30", "25")
+
+
+time = str_replace_all(time, "plus|and", "+")
+time = gsub("\\s+"," ", time)
+
+time = strsplit(time, "\\+")
+time.minutes = c()
+for (i in 1:nrow(avocado_recipe)) {
+    l = length(time[[i]])
+    mins = 0
+    for (j in 1:l){
+      time.mh = 0
+      if(str_detect(time[[i]][j], "minutes") & str_detect(time[[i]][j], "hour")){
+        t.mh = as.numeric(str_extract_all(time[[i]][j], "\\d+")[[1]])
+        time.mh = t.mh[1]*60 + t.mh[2]
+      } else if(str_detect(time[[i]][j], "minutes")) {
+        time.mh = as.numeric(str_extract(time[[i]][j], "\\d+")[[1]])
+      } else if(str_detect(time[[i]][j], "hour")) {
+        time.mh = as.numeric(str_extract(time[[i]][j], "\\d+")[[1]])*60
+      }
+      
+      mins = mins + time.mh
+    }
+  
+  time.minutes=c(time.minutes, mins)
+}
+
+avocado_recipe = cbind(avocado_recipe, as.data.frame(time.minutes)) %>% select(-time)
+write.csv(avocado_recipe, "avocado_recipe.csv")
+```
+
+## Shiny App
+
+We use the `shiny` package to create a shiny app. First of all, we import the CSV file obtained from the previous part. The shiny app has a sidebar which allows users to select the ranges of calorie and cook time, characteristics of recipe such as “vegan” and “quick & easy”. We also incorporate the run button to initiate the information retrieval. The main panel will return the filter selections and the titles of recipes that satisfy the requirements. Once the user clicks the link, a modal dialog box will pop up, listing the title, introduction, labels, cook time, calories, image as well as a link to the full recipe on the loveonetoday.com.  
+
+Besides, we also write a shiny dashboard file for this app. Since this dashboard file cannot be compiled in Rmarkdown, we put it in a separate `dashboard.R` file, and the related files are listed in the `dashboard_file` folder.
+
+```{r shiny}
+library(shiny)
+
+recipe <- read.csv("data/avocado_recipe.csv", stringsAsFactors = FALSE) %>%
+  as_tibble() %>%
+  select(-X) %>%
+  janitor::clean_names()
+
+feature <- c(
+  "New", "Popular", "Quick & Easy", "Heart-Healthy",
+  "Guacamoles & Dips", "Fall", "Summer"
+)
+health <- c(
+  "Vegan", "Vegetarian", "Meals Under 500 Calories", "Snacks Under 200 Calories", "Dairy-Free",
+  "Egg-Free", "Soy-Free", "Gluten-Free", "Grain-Free", "Fiber-Rich", "Good Source of Protein",
+  "No Added Sugars", "Low Sodium"
+)
+
+
+shinyApp(
+  ui <- fluidPage(
+    titlePanel("Avocado Recipe"),
+
+    sidebarLayout(
+      sidebarPanel(
+        
+        tabsetPanel(
+              tabPanel(
+                h5("calories and time"),
+                sliderInput("calories", "Calories Range",
+                  min = min(recipe$calories, na.rm = TRUE),
+                  max = max(recipe$calories, na.rm = TRUE),
+                  value = c(200, 1200)
+                ),
+                sliderInput("time", "Cooking Time Range",
+                  min = min(recipe$time_minutes, na.rm = TRUE),
+                  max = max(recipe$time_minutes, na.rm = TRUE),
+                  value = c(0, 100)
+                )
+              ),
+              tabPanel(
+                h5("Feature labels"),
+                checkboxGroupInput("feature", label = "feature", choices = feature)
+              ),
+              tabPanel(
+                h5("Health labels"),
+                checkboxGroupInput("health", label = "health", choices = health)
+              )
+            ),
+
+        # Run button
+        actionButton("run", "Go Avocado!")
+      ),
+
+      mainPanel(
+        uiOutput("selections"),
+        uiOutput("recipes")
+      )
+    )
+  ),
+
+  server <- function(input, output, session) {
+
+    # model dialog
+    recipeInfo <- function() {
+      modalDialog(
+        h4("Name"),
+        textOutput("title"),
+        h4("Introduction"),
+        textOutput("introduction"),
+        h4("Labels"),
+        textOutput("characteristics"),
+        h4("Cooking Time (in minutes)"),
+        textOutput("time"),
+        h4("Calories"),
+        textOutput("calories"),
+        br(),
+        htmlOutput("image_url"),
+        br(),
+        uiOutput("url"),
+        easyClose = TRUE
+      )
+    }
+
+    # Get filter result
+    search <- eventReactive(
+      input$run, {
+        print("Filter Avocado Recipes...")
+        df <- recipe %>%
+          filter(calories >= input$calories[1],
+                 calories <= input$calories[2],
+                 time_minutes >= input$time[1],
+                 time_minutes <= input$time[2]) 
+        
+        temp <- NULL
+        if (length(input$feature) != 0) {
+          for (i in 1:length(input$feature)) {
+            temp <- cbind(temp, str_detect(df$characteristics, input$feature[i]))
+          }
+        }
+        if (length(input$health) != 0) {
+          for (i in 1:length(input$health)) {
+            temp <- cbind(temp, str_detect(df$characteristics, input$health[i]))
+          }
+        }
+        if (length(input$feature) != 0 | length(input$health) != 0) {
+          temp <- rowSums(temp)
+          df <- df %>%
+            mutate(logictest = temp) %>%
+            filter(logictest == (length(input$feature) + length(input$health))) %>%
+            select(-logictest)
+        }
+      df
+      }
+    )
+
+
+    # Get filter inputs
+    get_selections <- eventReactive(
+      input$run,
+      list(
+        paste(input$calories[1], "~", input$calories[2]),
+        paste(input$time[1], "~", input$time[2]),
+        input$health,
+        input$feature
+      )
+    )
+    
+    # Show filter selections
+    observeEvent(
+      get_selections(),
+      output$selections <- renderUI(
+        fluidPage(
+          h4("Filter Selections:"),
+          renderText(c("Calories Range:", get_selections()[[1]])),
+          renderText(c("Time Range:", get_selections()[[2]])),
+          renderText(c("Health Labels:", paste(get_selections()[[3]], collapse = ", "))),
+          renderText(c("Feature Labels:", paste(get_selections()[[4]], collapse = ", ")))
+        )
+      )
+    )
+
+
+    observeEvent(
+      search(), {
+
+        # Get current existing observers
+        state <- reactiveValues(
+          observers = list()
+        )
+
+        # Destroy existing observers
+        for (i in seq_along(state$observers)) {
+          state$observers[[i]]$destroy()
+        }
+        
+        # Create new UI elements (fluidpage of fluidrows for links)
+        output$recipes <- renderUI(
+          fluidPage(
+            h4("Recipes:"),
+            if (nrow(search()) == 0) {
+              renderText("Woops! No results matched!")
+            } else {
+              renderText(paste("We found", nrow(search()), "avocado recipes for you!"))
+            },
+            br(),
+            map(
+              seq_len(search() %>% nrow()),
+              function(i) fluidRow(
+                  actionLink(paste0("link", i), search()[["title"]][i])
+                )
+            )
+          )
+        )
+
+        # Reset and create new observers for each of our links
+        state$observers <- map(
+          seq_len(search() %>% nrow()),
+          function(i) {
+            label <- paste0("link", i)
+            observeEvent(
+              input[[label]], # correspond to the fluidRows
+              {
+                cat("You clicked link ", i, "!\n", sep = "")
+
+                # Text
+                output$title <- renderText(search()[["title"]][i])
+                output$introduction <- renderText(search()[["introduction"]][i])
+                output$characteristics <- renderText(search()[["characteristics"]][i])
+                output$time <- renderText(search()[["time_minutes"]][i])
+                output$calories <- renderText(search()[["calories"]][i])
+
+                # Image
+                src <- search()[["image_url"]][i]
+                if (!is.na(src)) {
+                  output$image_url <- renderText({
+                    c('<img src="', src, '" width="450">')
+                  })
+                } else {
+                  output$image <- NULL
+                }
+
+                # URL
+                url <- a("Read it on loveonetoday website", href = search()[["url"]][i])
+                output$url <- renderUI(tagList("Web URL:", url))
+
+                showModal(recipeInfo())
+              },
+              ignoreInit = TRUE
+            )
+          }
+        )
+      }
+    )
+  }
+)
+
+```
+
+
+### Reference 
+
+1. https://en.wikipedia.org/wiki/Hass_avocado
+
+2. https://www.kaggle.com/neuromusic/avocado-prices
+
+3. https://loveonetoday.com/avocado-recipes/
+
+4. https://www.kaggle.com/ghannay/arima-forecasting-of-avocado-prices
